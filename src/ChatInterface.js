@@ -32,8 +32,8 @@ const ChatInterface = () => {
   };
 
   return (
-    <Box>
-      <Box>
+    <Box center>
+      <Box center>
         {/* Conversation display */}
         {conversation.map((entry, index) => (
           <p key={index}>
@@ -41,7 +41,7 @@ const ChatInterface = () => {
           </p>
         ))}
       </Box>
-      <Box>
+      <Box center>
         {/* Message input */}
         <TextField
           label="Type your message"
