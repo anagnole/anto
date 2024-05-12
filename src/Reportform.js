@@ -1,8 +1,8 @@
 // ReportForm.js
-import React, { useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import axios from "axios";
 import ReactQuill from "react-quill";
-import "react-quill/dist/quill.snow.css"; // Import quill styles
+import "react-quill/dist/quill.snow.css"; 
 import {
   Box,
   Button,
@@ -11,10 +11,30 @@ import {
   IconButton,
   CircularProgress,
 } from "@mui/material";
-//import { diff_match_patch } from "diff-match-patch";
+import { collection, doc, addDoc } from "firebase/firestore";
+import { db } from "./App";
+
 const Diff = require("diff");
 
-const ReportForm = () => {
+function extractTextFromHTML(htmlString) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(htmlString, "text/html");
+  return doc.body.textContent || "";
+}
+
+const ReportForm = ({ sessionId }) => {
+  const [structure, setStructure] = useState("");
+  const [detailedReport, setDetailedReport] = useState(""); // New state for the detailed report
+  const [lastSavedStructure, setLastSavedStructure] = useState("");
+  const [lastSavedReport, setLastSavedReport] = useState("");
+  const [reportWithChanges, setReportWithChanges] = useState("");
+  const [structureLoading, setStructureLoading] = useState(false);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [showChanges, setShowChanges] = useState(false);
+  const [lastSavedDate, setLastSavedDate] = useState(new Date());
+
+  const quillRef = useRef(null);
+  const structureRef = useRef(null);
   // Initialize form state with all fields
   const [formValues, setFormValues] = useState({
     student_name: "leo",
@@ -29,10 +49,40 @@ const ReportForm = () => {
     report_length: "200", // Keeping it empty to allow user input
   });
 
-  const highlightDifferences = (oldText, newText) => {
+  const highlightDifferences = async (
+    lastSavedStructure,
+    structure,
+    last_saved_report,
+    oldText,
+    newText
+  ) => {
     const diff = Diff.diffWords(oldText, newText);
-    console.log(oldText, "weifwoegf");
-    console.log(newText);
+    const diff2 = Diff.diffChars(
+      lastSavedReport.replace(/<br>/g, ""),
+      oldText.replace(/\n/g, "")
+    );
+
+    const diff3 = Diff.diffChars(
+      lastSavedStructure.replace(/<br>/g, ""),
+      structure.replace(/<br>/g, "")
+    );
+    console.log("diff3", diff3);
+
+    const totalReportAdditions = diff2.reduce((acc, part) => {
+      return acc + (part.added ? part.count : 0);
+    }, 0);
+    const totalReportDeletions = diff2.reduce((acc, part) => {
+      return acc + (part.removed ? part.count : 0);
+    }, 0);
+
+    const totalStructureAdditions = diff3.reduce((acc, part) => {
+      return acc + (part.added ? part.count : 0);
+    }, 0);
+
+    const totalStructureDeletions = diff3.reduce((acc, part) => {
+      return acc + (part.removed ? part.count : 0);
+    }, 0);
+
     const to_ret = diff
       .map((part) => {
         if (part.added) {
@@ -43,21 +93,79 @@ const ReportForm = () => {
         return part.value;
       })
       .join("");
-    console.log(to_ret);
-    return to_ret;
+
+    const to_ret2 = diff2
+      .map((part) => {
+        if (part.added) {
+          return `<span style="background-color: #ddffdd;">${part.value}</span>`;
+        } else if (part.removed) {
+          return `<span style="background-color: #ffdddd;">${part.value}</span>`;
+        }
+        return part.value;
+      })
+      .join("");
+
+    const to_ret3 = diff3
+      .map((part) => {
+        if (part.added) {
+          return `<span style="background-color: #ddffdd;">${part.value}</span>`;
+        } else if (part.removed) {
+          return `<span style="background-color: #ffdddd;">${part.value}</span>`;
+        }
+        return part.value;
+      })
+      .join("");
+
+    const newDate = new Date();
+    const timeDiff = newDate - lastSavedDate;
+    setLastSavedDate(newDate);
+
+    await addDoc(collection(db, "reports"), {
+      sessionId: sessionId,
+      currentStructure:
+        totalStructureAdditions !== 0 || totalStructureDeletions !== 0
+          ? to_ret3
+          : "",
+      lastSavedStructure: lastSavedStructure,
+      rawStucture: extractTextFromHTML(to_ret3),
+      timeSincePreviousGeneration: timeDiff,
+      timeStamp: newDate,
+      regenaretedReport: to_ret,
+      reportBeforeUserChanges: last_saved_report,
+      reportAfterUserChanges:
+        totalReportAdditions !== 0 || totalReportDeletions !== 0 ? to_ret2 : "",
+      rawRegeneratedReport: extractTextFromHTML(to_ret),
+      userReportAdditions: totalReportAdditions,
+      userReportDeletions: totalReportDeletions,
+      userStructureAdditions: totalStructureAdditions,
+      userStructureDeletions: totalStructureDeletions,
+    })
+      .then((docRef) => {
+        //console.log("Document written with ID: ", docRef.id);
+      })
+      .catch((error) => {
+        console.error("Error adding document: ", error);
+      });
+
+    return to_ret.replace(/\n/g, "<br>");
   };
 
   // State for the generated report
-  const [structure, setStructure] = useState("");
-  const [detailedReport, setDetailedReport] = useState(""); // New state for the detailed report
-  const [lastSavedStructure, setLastSavedStructure] = useState("");
-  const [lastSavedReport, setLastSavedReport] = useState("");
-  const [reportWithChanges, setReportWithChanges] = useState("");
-  const [structureLoading, setStructureLoading] = useState(false);
-  const [reportLoading, setReportLoading] = useState(false);
-  const [showChanges, setShowChanges] = useState(true);
 
-  // Update form state based on input changes
+  const downloadReport = () => {
+    const blob = new Blob([showChanges ? reportWithChanges : detailedReport], {
+      type: "text/html",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "report.html"; // Specify the file name
+    document.body.appendChild(link); // Required for Firefox
+    link.click();
+    document.body.removeChild(link); // Clean up
+    URL.revokeObjectURL(url); // Free up resources
+  };
+
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormValues({ ...formValues, [name]: value });
@@ -82,55 +190,52 @@ const ReportForm = () => {
         }
       );
       const formattedDetailedReport =
-        detailedResponse.data.detailedReport.replace(/\n/g, "<br>");
+        detailedResponse.data.detailedReport?.replace(/\n/g, "<br>");
 
+      setLastSavedDate(new Date());
       setDetailedReport(formattedDetailedReport);
-      //setDetailedReport(detailedResponse.data.detailedReport);
-
-      console.log("Ive been executed (detailed report)");
-      setLastSavedReport(detailedReport);
+      setLastSavedReport(formattedDetailedReport);
     } catch (error) {
       console.error("Error generating the detailed report:", error);
     }
   };
 
   const handleRegenerateReport = async () => {
+    const editorText = quillRef.current.getEditor().getText();
+    setLastSavedStructure(structure);
     setReportLoading(true);
     try {
-      setLastSavedReport(detailedReport);
-      setLastSavedStructure(structure);
-
-      const dataToSend = {
-        last_saved_structure: lastSavedStructure,
-        last_saved_report: lastSavedReport,
-        current_structure: structure,
-        current_report: detailedReport,
-      };
       const response = await axios.post(
         "http://127.0.0.1:5000/regenerate_detailed_report",
         {
           last_saved_structure: lastSavedStructure,
           last_saved_report: lastSavedReport,
           current_structure: structure, // The current content of the first editor
-          current_report: detailedReport, // The current content of the second editor
+          current_report: editorText, // The current content of the second editor
         }
       );
 
       // Update the content of the text editors with the regenerated report
-      //setReport(response.data.updatedDetailedReport); // tjat was a mistake
+      console.log("response", response.data.updatedDetailedReport);
       setReportWithChanges(
-        highlightDifferences(
-          detailedReport,
+        await highlightDifferences(
+          lastSavedStructure,
+          structure,
+          lastSavedReport,
+          editorText,
           response.data.updatedDetailedReport
         )
       );
-
       setDetailedReport(
-        response.data.updatedDetailedReport.replace(/\n/g, "<br>")
+        response?.data?.updatedDetailedReport?.replace(/\n/g, "<br>")
+      );
+      setLastSavedReport(
+        response?.data?.updatedDetailedReport?.replace(/\n/g, "<br>")
       );
     } catch (error) {
       console.error("Error regenerating the report:", error);
     }
+
     setReportLoading(false);
   };
 
@@ -150,14 +255,12 @@ const ReportForm = () => {
 
       setStructure(formattedStructure);
       setStructureLoading(false);
-
-      //setStructure(response.data.report);
-      console.log("Ive been executed Structure");
       setLastSavedStructure(formattedStructure);
     } catch (error) {
       console.error("Error generating the report:", error);
     }
     await handleDetailedReportGeneration();
+
     setReportLoading(false);
   };
 
@@ -273,6 +376,13 @@ const ReportForm = () => {
         >
           Generate Report
         </Button>
+        <Button
+          onClick={downloadReport}
+          variant="contained"
+          sx={{ margin: "auto", top: "15px", marginBottom: "15px" }}
+        >
+          Save Report
+        </Button>
       </Box>
 
       <Box
@@ -288,44 +398,61 @@ const ReportForm = () => {
         <Box sx={{ flex: 1, height: "400px", maxWidth: "50%" }}>
           {structureLoading && (
             <CircularProgress
-              sx={{ position: "absolute", left: "25%", top: "50%" }}
+              sx={{ position: "absolute", left: "25%", top: "80%" }}
             />
           )}
           <ReactQuill
+            ref={structureRef}
             style={{ height: "350px" }}
             theme="snow"
             value={structureLoading ? "" : structure}
-            onChange={(content) => setStructure(content)}
+            onChange={(content, delta, source, editor) => {
+              setStructure(content);
+              if (
+                source === "user" &&
+                delta?.ops[1]?.delete === undefined &&
+                delta.ops[0].retain
+              ) {
+                const index = delta.ops[0].retain;
+                const quill = structureRef.current.getEditor();
+
+                quill.formatText(index, 1, "color", "blue");
+              }
+            }}
           />
         </Box>
         <Box sx={{ flex: 1, maxWidth: "50%" }}>
           {reportLoading && (
             <CircularProgress
-              sx={{ position: "absolute", right: "25%", top: "50%" }}
+              sx={{ position: "absolute", right: "25%", top: "80%" }}
             />
           )}
 
           <ReactQuill
+            ref={quillRef}
             style={{ height: "350px" }}
             theme="snow"
             value={
               !reportLoading
                 ? showChanges && reportWithChanges !== ""
-                  ? reportWithChanges.replace(/\n/g, "<br>")
-                  : detailedReport.replace(/\n/g, "<br>")
+                  ? reportWithChanges
+                  : //: detailedReport?.replace(/\n/g, "<br>")
+                    detailedReport
                 : ""
             }
             onChange={(content, delta, source, editor) => {
-              const formattedContent = content.replace(/\n/g, "<br>");
-              // Log the content of the editor after change
-              // console.log(formattedContent);
-              // If you also want to log the actual changes (deltas)
-              //console.log(delta);
-              // Update the state with the new content
-              // setDetailedReport(content);
-              //setDetailedReport(formattedContent);
+              //!showChanges && setDetailedReport(content);
+              if (
+                source === "user" &&
+                delta?.ops[1]?.delete === undefined &&
+                delta.ops[0].retain
+              ) {
+                const index = delta.ops[0].retain;
+                const quill = quillRef.current.getEditor();
+
+                quill.formatText(index, 1, "color", "blue");
+              }
             }}
-            //onChange={(content) => setDetailedReport(content)}
           />
         </Box>
       </Box>
@@ -340,7 +467,7 @@ const ReportForm = () => {
         >
           Regenerate Full Report
         </Button>
-        {reportWithChanges !== "" && lastSavedReport !== detailedReport && (
+        {reportWithChanges !== "" && (
           <Box
             sx={{
               display: "flex",
@@ -361,20 +488,21 @@ const ReportForm = () => {
             >
               {showChanges ? "Hide Changes" : "Show Changes"}
             </Button>
-
-            <Button
-              variant="contained"
-              type="submit"
-              sx={{
-                margin: "auto",
-                top: "15px",
-                marginBottom: "15px",
-                width: 200,
-              }}
-              onClick={undoChanges}
-            >
-              undo changes
-            </Button>
+            {lastSavedReport !== detailedReport && (
+              <Button
+                variant="contained"
+                type="submit"
+                sx={{
+                  margin: "auto",
+                  top: "15px",
+                  marginBottom: "15px",
+                  width: 200,
+                }}
+                onClick={undoChanges}
+              >
+                undo changes
+              </Button>
+            )}
           </Box>
         )}
       </Box>
